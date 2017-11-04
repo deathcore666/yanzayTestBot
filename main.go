@@ -17,8 +17,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	bot.HandleFunc("/start", Start)
-	bot.HandleFunc("/kafka {topic}", Kafka)
+	bot.HandleFunc("{topic}", Handler)
 
 	err = bot.ListenAndServe()
 	if err != nil {
@@ -26,33 +25,40 @@ func main() {
 	}
 }
 
-func Kafka(m *tbot.Message) {
-	var reqChan = make(chan string)
-	var respChan = make(chan string, 1)
+func Handler(m *tbot.Message) {
+	var inChan = make(chan string)
+	var outChan = make(chan string)
 	topic := m.Vars["topic"]
-	go kafkaRoutine(reqChan, topic)
+	go kafkaRoutine(inChan, topic)
 	go func() {
 		for {
-			msg := <-reqChan
-			respChan <- msg
+			msg := <-inChan
+			outChan <- msg
 		}
 	}()
 
 	for {
-		message := <-respChan
+		message := <-outChan
 		fmt.Println("received message from kafka:", message)
 		m.Reply(message)
 	}
 }
 
-func kafkaRoutine(reqChan chan string, topic string) {
+func kafkaRoutine(inChan chan string, topic string) {
 	config := sarama.NewConfig()
 	config.Consumer.Return.Errors = true
-
 	consumer, err := sarama.NewConsumer(brokers, config)
 	if err != nil {
 		panic(err)
 	}
+
+	topics, _ := consumer.Topics()
+	if !(containsTopic(topics, topic)) {
+		inChan <- "There is no such a topic"
+		fmt.Println("kafkaroutine exited")
+		return
+	}
+
 	partitionList, err := consumer.Partitions(topic)
 	for _, partition := range partitionList {
 		pc, _ := consumer.ConsumePartition(topic, partition, sarama.OffsetOldest)
@@ -60,7 +66,7 @@ func kafkaRoutine(reqChan chan string, topic string) {
 			for {
 				select {
 				case msg := <-pc.Messages():
-					reqChan <- string(msg.Value)
+					inChan <- string(msg.Value)
 				}
 			}
 		}(pc)
@@ -68,8 +74,11 @@ func kafkaRoutine(reqChan chan string, topic string) {
 	fmt.Println("kafkaRoutine exited")
 }
 
-//Start Hello
-func Start(m *tbot.Message) {
-	response := fmt.Sprint("This is the test bot")
-	m.Reply(response, tbot.WithMarkdown)
+func containsTopic(topics []string, topic string) bool {
+	for _, v := range topics {
+		if topic == v {
+			return true
+		}
+	}
+	return false
 }
